@@ -4,9 +4,27 @@ import numpy as np
 import onnxruntime as ort
 from flask import Flask, request, redirect
 
+# ================== FIREBASE / FIRESTORE ==================
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# --------- CHANGE THIS PATH FOR RENDER ----------
+# 1. Download service account JSON from Firebase console
+# 2. Add it to your repo (e.g. "serviceAccountKey.json") or mount via env
+# 3. Put the correct path here
+SERVICE_ACCOUNT_PATH = "serviceAccountKey.json"
+
+# Initialize Firebase Admin only once
+cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+firebase_admin.initialize_app(cred)
+fs_client = firestore.client()
+
 # ================== CONFIG ==================
 
-MODEL_PATH = r"best.onnx"
+# ⚠️ CHANGE THIS PATH ON RENDER:
+#   Put best.onnx inside your repo, e.g. in "model/best.onnx"
+#   Then use: MODEL_PATH = "model/best.onnx"
+MODEL_PATH = r"model/best.onnx"  # <-- update for Render
 
 # EXACTLY as in railway_station/data.yaml
 CLASS_NAMES = [
@@ -162,11 +180,44 @@ def run_onnx_inference(image_bgr):
     }
 
 
-def render_page(message_html: str = ""):
+def save_result_to_firestore(material_id: str, component: str, conf: float):
+    """
+    Update Firestore document:
+      materials/{material_id}
+    with AI verification fields.
+    """
+    try:
+        doc_ref = fs_client.collection("materials").document(material_id)
+        doc_ref.set(
+            {
+                "aiVerified": True,
+                "aiVerifiedComponent": component.upper(),
+                "aiVerifiedConfidence": conf,
+                "aiVerifiedAt": firestore.SERVER_TIMESTAMP,
+            },
+            merge=True,
+        )
+        print(f"[Firestore] Updated materials/{material_id} with AI verification.")
+    except Exception as e:
+        print("[Firestore] Error updating document:", e)
+
+
+def render_page(message_html: str = "", material_id: str | None = None):
     """
     Simple HTML page with file upload and result area.
     `message_html` is injected into the result div.
+    If material_id is present, we show it and embed in a hidden input.
     """
+    if material_id:
+        material_info_html = f"""
+      <p style="font-size:0.8rem;color:#444;margin-bottom:8px;">
+        Material ID: <b>{material_id}</b>
+      </p>
+      <input type="hidden" name="materialId" value="{material_id}" />
+        """
+    else:
+        material_info_html = ""
+
     return f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -241,6 +292,7 @@ def render_page(message_html: str = ""):
     <h1>Track Fitting Element Verification</h1>
     <p>Upload a Jio-tag or track fitting image. The AI will identify whether it is ERC, Liner, Pad, Sleeper, Clip or Bolt.</p>
     <form method="POST" action="/verify" enctype="multipart/form-data">
+      {material_info_html}
       <div class="file-input">
         <input type="file" name="image" accept="image/*" required />
       </div>
@@ -267,13 +319,16 @@ def root():
 @app.route("/verify", methods=["GET", "POST"])
 def verify():
     if request.method == "GET":
-        # Show upload page
-        return render_page()
+        # Optional materialId from query param: /verify?materialId=ABC1234
+        material_id = request.args.get("materialId")
+        return render_page(material_id=material_id)
 
     # POST: handle image upload and run inference
     file = request.files.get("image")
+    material_id = request.form.get("materialId")  # may be None
+
     if not file or file.filename == "":
-        return render_page('<span class="error">No image selected.</span>')
+        return render_page('<span class="error">No image selected.</span>', material_id)
 
     # Read file into OpenCV BGR image
     try:
@@ -282,33 +337,42 @@ def verify():
         img_bgr = cv2.imdecode(file_array, cv2.IMREAD_COLOR)
     except Exception as e:
         print("Decode error:", e)
-        return render_page('<span class="error">Could not read image data.</span>')
+        return render_page('<span class="error">Could not read image data.</span>', material_id)
 
     if img_bgr is None:
-        return render_page('<span class="error">Failed to decode image.</span>')
+        return render_page('<span class="error">Failed to decode image.</span>', material_id)
 
     try:
         det = run_onnx_inference(img_bgr)
     except Exception as e:
         print("Inference error:", e)
         return render_page(
-            f'<span class="error">Inference error: {str(e)}</span>'
+            f'<span class="error">Inference error: {str(e)}</span>',
+            material_id,
         )
 
     if det is None:
         return render_page(
-            "No ERC/LINER/PAD/SLEEPER/CLIP/BOLT detected above threshold."
+            "No ERC/LINER/PAD/SLEEPER/CLIP/BOLT detected above threshold.",
+            material_id,
         )
 
     comp = det["component"].upper()
     conf = det["conf"]
 
+    # If we have a materialId, update Firestore
+    if material_id:
+        save_result_to_firestore(material_id, comp, conf)
+
     msg = f"<b>Detected:</b> {comp} &nbsp; <b>Confidence:</b> {conf:.2f}"
-    return render_page(msg)
+    if material_id:
+        msg += f"<br/><br/>Result stored for <b>Material ID {material_id}</b> in Firestore."
+
+    return render_page(msg, material_id)
 
 
 # ================== MAIN ==================
 
 if __name__ == "__main__":
-    # Run development server
+    # Run development server locally
     app.run(host="0.0.0.0", port=5000, debug=True)
