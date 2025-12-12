@@ -1,5 +1,6 @@
 flask
-onnxruntime
+flask-cors
 numpy
 opencv-python-headless
+onnxruntime
 gunicorn
