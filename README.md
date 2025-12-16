@@ -104,8 +104,8 @@ This model acts as an **AI-based verification layer** in the **Vimarsha ecosyste
 
 ## 👨‍💻 Contributors
 
-- 👤 [@IncharaS06](https://github.com/IncharaS06)  
-- 👤 [@yashwanths814](https://github.com/yashwanths814)  
+- 👤 [IncharaS06](https://github.com/IncharaS06)  
+- 👤 [yashwanths814](https://github.com/yashwanths814)  
 
 ---
 
